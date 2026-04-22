@@ -20,9 +20,6 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: playground
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -32,10 +29,18 @@ jobs:
         with:
           node-version: 22
 
-      - name: Install dependencies
+      - name: Install root dependencies
+        run: npm install
+
+      - name: Build library dist
+        run: npm run build
+
+      - name: Install playground dependencies
+        working-directory: playground
         run: npm install
 
       - name: Build playground
+        working-directory: playground
         env:
           VITE_BASE_PATH: /monaco-react/
         run: npm run build
