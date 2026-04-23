@@ -1,8 +1,5 @@
+/// <reference types="vite/client" />
 import React, { useEffect, useRef, useState } from 'react';
-
-// Side-effect import: wires up MonacoEnvironment workers, theme, and SQL
-// language contributions BEFORE the editor is mounted.
-import './monaco-setup';
 
 import {
   EntityContextType,
@@ -10,7 +7,13 @@ import {
   setupLanguageFeatures,
   type CompletionService,
   type ICompletionItem,
+  vsPlusTheme,
 } from 'monaco-sql-languages';
+import { loader } from '../../dist';
+import * as monaco from 'monaco-editor';
+import EditorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';
+import PgSQLWorker from 'monaco-sql-languages/esm/languages/pgsql/pgsql.worker?worker';
+import 'monaco-sql-languages/esm/languages/pgsql/pgsql.contribution';
 import { language as pgsqlLanguage } from 'monaco-sql-languages/esm/languages/pgsql/pgsql';
 import { languages as monacoLanguages } from 'monaco-editor';
 
@@ -36,6 +39,29 @@ function extractTypeKeywords(lang: unknown): string[] {
 }
 
 const PG_TYPE_KEYWORDS = extractTypeKeywords(pgsqlLanguage);
+
+// Inline Monaco setup (instead of separate `monaco-setup.ts`) so CI build
+// cannot fail from a missing side-effect module.
+const pgsqlRootRules = (pgsqlLanguage as unknown as { tokenizer: { root: unknown[] } }).tokenizer.root;
+const hasTypecastRule = pgsqlRootRules.some(
+  (rule) => Array.isArray(rule) && String((rule as unknown[])[0]) === String(/::/),
+);
+if (!hasTypecastRule) {
+  pgsqlRootRules.unshift([/::/, 'operator.symbol']);
+}
+
+(globalThis as unknown as { MonacoEnvironment: monaco.Environment }).MonacoEnvironment = {
+  getWorker(_workerId: string, label: string) {
+    if (label === LanguageIdEnum.PG) {
+      return new PgSQLWorker();
+    }
+    return new EditorWorker();
+  },
+};
+
+monaco.editor.defineTheme('sql-light', vsPlusTheme.lightThemeData);
+monaco.editor.defineTheme('sql-dark', vsPlusTheme.darkThemeData);
+loader.config({ monaco });
 
 type Schema = Record<string, string[]>;
 
