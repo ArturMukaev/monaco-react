@@ -83,6 +83,23 @@ ansi-styles@^4.0.0, ansi-styles@^4.1.0:
   dependencies:
     color-convert "^2.0.1"
 
+antlr4-c3@3.3.7:
+  version "3.3.7"
+  resolved "https://registry.npmjs.org/antlr4-c3/-/antlr4-c3-3.3.7.tgz"
+  integrity sha512-F3ndE38wwA6z6AjUbL3heSdEGl4TxulGDPf9xB0/IY4dbRHWBh6XNaqFwur8vHKQk9FS5yNABHeg2wqlqIYO0w==
+  dependencies:
+    antlr4ng "2.0.11"
+
+antlr4ng-cli@1.0.7:
+  version "1.0.7"
+  resolved "https://registry.npmjs.org/antlr4ng-cli/-/antlr4ng-cli-1.0.7.tgz"
+  integrity sha512-qN2FsDBmLvsQcA5CWTrPz8I8gNXeS1fgXBBhI78VyxBSBV/EJgqy8ks6IDTC9jyugpl40csCQ4sL5K4i2YZ/2w==
+
+antlr4ng@2.0.11:
+  version "2.0.11"
+  resolved "https://registry.npmjs.org/antlr4ng/-/antlr4ng-2.0.11.tgz"
+  integrity sha512-9jM91VVtHSqHkAHQsXHaoaiewFETMvUTI1/tXvwTiFw4f7zke3IGlwEyoKN9NS0FqIwDKFvUNW2e1cKPniTkVQ==
+
 chalk@4.1.2:
   version "4.1.2"
   resolved "https://registry.npmjs.org/chalk/-/chalk-4.1.2.tgz"
@@ -130,6 +147,14 @@ dompurify@^3.2.4:
   integrity sha512-WhL/YuveyGXJaerVlMYGWhvQswa7myDG17P7Vu65EWC05o8vfeNbvNf4d/BOvH99+ZW+LlQsc1GDKMa1vNK6dw==
   optionalDependencies:
     "@types/trusted-types" "^2.0.7"
+
+dt-sql-parser@4.4.2:
+  version "4.4.2"
+  resolved "https://registry.npmjs.org/dt-sql-parser/-/dt-sql-parser-4.4.2.tgz"
+  integrity sha512-NpfSeCetxDICs5NNOHKO/e/PTQ/EFnGW0QBo11e5nmuWqVRACZkArcBH9/LKnoe1Mdtql45U5h0aU9GOqhBLWg==
+  dependencies:
+    antlr4-c3 "3.3.7"
+    antlr4ng "2.0.11"
 
 emoji-regex@^8.0.0:
   version "8.0.0"
@@ -203,13 +228,20 @@ marked@14.0.0:
   resolved "https://registry.npmjs.org/marked/-/marked-14.0.0.tgz"
   integrity sha512-uIj4+faQ+MgHgwUW1l2PsPglZLOLOT1uErt06dAPtx2kjteLAkbsd/0FiYg/MGS+i7ZKLb7w2WClxHkzOOuryQ==
 
-monaco-editor@^0.54.0:
+monaco-editor@^0.54.0, monaco-editor@>=0.37.1:
   version "0.54.0"
   resolved "https://registry.npmjs.org/monaco-editor/-/monaco-editor-0.54.0.tgz"
   integrity sha512-hx45SEUoLatgWxHKCmlLJH81xBo0uXP4sRkESUpmDQevfi+e7K1VuiSprK6UpQ8u4zOcKNiH0pMvHvlMWA/4cw==
   dependencies:
     dompurify "3.1.7"
     marked "14.0.0"
+
+monaco-sql-languages@^1.0.0:
+  version "1.0.0"
+  resolved "https://registry.npmjs.org/monaco-sql-languages/-/monaco-sql-languages-1.0.0.tgz"
+  integrity sha512-zZPHOYHvhACTc8PdJvHOvi5i1LmW65+1/LgbZMhIhNvgNEbSGp8IVimKHmH0JDAE3QHAbZSLr4HoO8Bvkqf2DQ==
+  dependencies:
+    dt-sql-parser "4.4.2"
 
 nanoid@^3.3.11:
   version "3.3.11"

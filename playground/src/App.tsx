@@ -1,210 +1,203 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+
+// Side-effect import: wires up MonacoEnvironment workers, theme, and SQL
+// language contributions BEFORE the editor is mounted.
+import './monaco-setup';
+
+import {
+  EntityContextType,
+  LanguageIdEnum,
+  setupLanguageFeatures,
+  type CompletionService,
+  type ICompletionItem,
+} from 'monaco-sql-languages';
+import { language as pgsqlLanguage } from 'monaco-sql-languages/esm/languages/pgsql/pgsql';
+import { languages as monacoLanguages } from 'monaco-editor';
 
 import Editor, { type Monaco } from '../../dist';
 
-type SqlDialect = 'postgresql' | 'oracle';
+// Currently only PostgreSQL is wired to monaco-sql-languages. Oracle is kept
+// in the dropdown for UX continuity but is disabled (see the <select> below).
+type SqlDialect = 'pgsql';
 
-const DIALECT_SCHEMAS: Record<SqlDialect, Record<string, string[]>> = {
-  postgresql: {
+const DIALECT_LANGUAGE_ID: Record<SqlDialect, LanguageIdEnum> = {
+  pgsql: LanguageIdEnum.PG,
+};
+
+const DIALECT_LABEL: Record<SqlDialect, string> = {
+  pgsql: 'PostgreSQL',
+};
+
+// Reuse the same type keyword list that monaco-sql-languages uses for
+// highlighting, so the suggestions stay consistent with the tokenizer.
+function extractTypeKeywords(lang: unknown): string[] {
+  const types = (lang as { typeKeywords?: string[] }).typeKeywords ?? [];
+  return Array.from(new Set(types)).sort();
+}
+
+const PG_TYPE_KEYWORDS = extractTypeKeywords(pgsqlLanguage);
+
+type Schema = Record<string, string[]>;
+
+const DIALECT_SCHEMAS: Record<SqlDialect, Schema> = {
+  pgsql: {
     users: ['id', 'email', 'first_name', 'last_name', 'created_at', 'status'],
     orders: ['id', 'user_id', 'total_amount', 'currency', 'created_at', 'status'],
     products: ['id', 'sku', 'title', 'price', 'category_id', 'in_stock'],
     categories: ['id', 'name', 'parent_id', 'is_active'],
   },
-  oracle: {
-    USERS: ['ID', 'EMAIL', 'FIRST_NAME', 'LAST_NAME', 'CREATED_AT', 'STATUS'],
-    ORDERS: ['ID', 'USER_ID', 'TOTAL_AMOUNT', 'CURRENCY', 'CREATED_AT', 'STATUS'],
-    PRODUCTS: ['ID', 'SKU', 'TITLE', 'PRICE', 'CATEGORY_ID', 'IN_STOCK'],
-    CATEGORIES: ['ID', 'NAME', 'PARENT_ID', 'IS_ACTIVE'],
-  },
 };
 
-const DIALECT_KEYWORDS: Record<SqlDialect, string[]> = {
-  postgresql: [
-    'SELECT',
-    'FROM',
-    'WHERE',
-    'JOIN',
-    'LEFT JOIN',
-    'RIGHT JOIN',
-    'GROUP BY',
-    'ORDER BY',
-    'HAVING',
-    'LIMIT',
-    'OFFSET',
-    'RETURNING',
-    'ILIKE',
-    'INSERT',
-    'UPDATE',
-    'DELETE',
-    'CREATE',
-    'ALTER',
-    'DROP',
-    'WITH',
-    'AND',
-    'OR',
-    'IN',
-    'NOT',
-    'NULL',
-    'AS',
-  ],
-  oracle: [
-    'SELECT',
-    'FROM',
-    'WHERE',
-    'JOIN',
-    'LEFT JOIN',
-    'RIGHT JOIN',
-    'GROUP BY',
-    'ORDER BY',
-    'HAVING',
-    'FETCH FIRST',
-    'ROWNUM',
-    'MERGE',
-    'NVL',
-    'SYSDATE',
-    'SYSTIMESTAMP',
-    'INSERT',
-    'UPDATE',
-    'DELETE',
-    'CREATE',
-    'ALTER',
-    'DROP',
-    'CONNECT BY',
-    'START WITH',
-    'AND',
-    'OR',
-    'IN',
-    'NOT',
-    'NULL',
-    'AS',
-  ],
-};
-
-function getAliasToTableMap(sql: string) {
-  const aliasMap = new Map<string, string>();
-  const aliasRegex = /\b(?:from|join)\s+([a-z_][\w$]*)\s+([a-z_][\w$]*)\b/gi;
-  let match: RegExpExecArray | null = aliasRegex.exec(sql);
-
-  while (match) {
-    aliasMap.set(match[2].toLowerCase(), match[1]);
-    match = aliasRegex.exec(sql);
+function detectCastContext(sqlBeforeCursor: string): 'none' | 'pg-typecast' | 'cast-as' {
+  // PostgreSQL `value::type` shorthand. Match optional whitespace + partial word
+  // after the `::` so the check also succeeds while the user is typing the type name.
+  if (/::\s*\w*$/.test(sqlBeforeCursor)) {
+    return 'pg-typecast';
   }
 
-  return aliasMap;
+  // `CAST(x AS type)` — walk back to the last occurrence of `cast(` to make
+  // sure we're still inside that expression. A simple heuristic, enough for the demo.
+  const lowered = sqlBeforeCursor.toLowerCase();
+  const castIdx = lowered.lastIndexOf('cast(');
+  if (castIdx !== -1) {
+    const tail = sqlBeforeCursor.slice(castIdx);
+    if (!tail.includes(')') && /\bas\s+\w*$/i.test(tail)) {
+      return 'cast-as';
+    }
+  }
+
+  return 'none';
 }
 
-function resolveCompletionContext(sqlBeforeCursor: string) {
-  const normalized = sqlBeforeCursor.toLowerCase();
-  const aliasDotMatch = normalized.match(/([a-z_][\w$]*)\.\s*$/i);
+function buildCompletionService(getSchema: () => Schema): CompletionService {
+  return async (model, position, _context, suggestions, entities, snippets) => {
+    if (!suggestions) {
+      return [];
+    }
 
-  if (aliasDotMatch) {
-    return { kind: 'alias-column' as const, alias: aliasDotMatch[1] };
-  }
+    const schema = getSchema();
+    const tables = Object.keys(schema);
+    const results: ICompletionItem[] = [];
 
-  if (/\b(from|join|update|into|table)\s+[a-z_0-9$]*$/i.test(normalized)) {
-    return { kind: 'table' as const };
-  }
+    // Handle type-cast suggestions (PostgreSQL `::type` and `CAST(x AS type)`)
+    // BEFORE returning table/column results — inside a cast, only types make sense.
+    const sqlBeforeCursor = model.getValueInRange({
+      startLineNumber: 1,
+      startColumn: 1,
+      endLineNumber: position.lineNumber,
+      endColumn: position.column,
+    });
+    const castContext = detectCastContext(sqlBeforeCursor);
 
-  if (/\b(select|where|on|having|group\s+by|order\s+by|set|and|or)\s+[a-z_0-9$]*$/i.test(normalized)) {
-    return { kind: 'column' as const };
-  }
+    if (castContext !== 'none') {
+      return PG_TYPE_KEYWORDS.map<ICompletionItem>((type) => ({
+        label: type,
+        kind: monacoLanguages.CompletionItemKind.TypeParameter,
+        detail: 'type',
+        insertText: type,
+        sortText: '0' + type,
+      }));
+    }
 
-  return { kind: 'any' as const };
+    const keywordItems: ICompletionItem[] = suggestions.keywords.map((keyword) => ({
+      label: keyword,
+      kind: monacoLanguages.CompletionItemKind.Keyword,
+      detail: 'keyword',
+      insertText: keyword,
+      sortText: '3' + keyword,
+    }));
+
+    suggestions.syntax.forEach((item) => {
+      if (item.syntaxContextType === EntityContextType.TABLE) {
+        tables.forEach((table) => {
+          results.push({
+            label: table,
+            kind: monacoLanguages.CompletionItemKind.Struct,
+            detail: 'table',
+            insertText: table,
+            sortText: '1' + table,
+          });
+        });
+      }
+
+      if (item.syntaxContextType === EntityContextType.COLUMN) {
+        // Prefer columns that belong to tables already referenced in the query.
+        // This covers cases like: SELECT u.| FROM users u
+        const referencedTables = (entities ?? [])
+          .filter(
+            (entity) =>
+              entity.entityContextType === EntityContextType.TABLE && schema[entity.text],
+          )
+          .map((entity) => entity.text);
+
+        const targetTables = referencedTables.length > 0 ? referencedTables : tables;
+        const seen = new Set<string>();
+
+        targetTables.forEach((table) => {
+          (schema[table] ?? []).forEach((column) => {
+            const key = `${table}.${column}`;
+            if (seen.has(key)) return;
+            seen.add(key);
+            results.push({
+              label: { label: column, description: table },
+              kind: monacoLanguages.CompletionItemKind.Field,
+              detail: `column · ${table}`,
+              insertText: column,
+              sortText: '2' + column,
+            });
+          });
+        });
+      }
+    });
+
+    const snippetItems: ICompletionItem[] = (snippets ?? []).map((snippet) => ({
+      label: snippet.label || snippet.prefix,
+      kind: monacoLanguages.CompletionItemKind.Snippet,
+      detail: snippet.description ?? 'SQL Snippet',
+      insertText: snippet.insertText,
+      insertTextRules: monacoLanguages.CompletionItemInsertTextRule.InsertAsSnippet,
+      filterText: snippet.prefix,
+      sortText: '4' + snippet.prefix,
+    }));
+
+    return [...results, ...keywordItems, ...snippetItems];
+  };
 }
 
 function App() {
-  const [query, setQuery] = useState("");
-  const [dialect, setDialect] = useState<SqlDialect>('postgresql');
-  const providerRef = useRef<{ dispose: () => void } | null>(null);
+  const [query, setQuery] = useState('');
+  const [dialect] = useState<SqlDialect>('pgsql');
   const monacoRef = useRef<Monaco | null>(null);
 
-  const activeSchema = useMemo(() => DIALECT_SCHEMAS[dialect], [dialect]);
-  const tableNames = useMemo(() => Object.keys(activeSchema), [activeSchema]);
-  const columnNames = useMemo(() => Object.values(activeSchema).flat(), [activeSchema]);
-  const activeKeywords = useMemo(() => DIALECT_KEYWORDS[dialect], [dialect]);
+  const activeSchema = DIALECT_SCHEMAS[dialect];
+  const schemaRef = useRef(activeSchema);
 
   useEffect(() => {
-    return () => {
-      providerRef.current?.dispose();
-    };
-  }, []);
+    schemaRef.current = activeSchema;
+  }, [activeSchema]);
 
-  const registerCompletionProvider = (monaco: Monaco) => {
-    providerRef.current?.dispose();
-    providerRef.current = monaco.languages.registerCompletionItemProvider('sql', {
-      triggerCharacters: ['.', ' '],
-      provideCompletionItems: (model, position) => {
-        const sqlBeforeCursor = model.getValueInRange({
-          startLineNumber: 1,
-          startColumn: 1,
-          endLineNumber: position.lineNumber,
-          endColumn: position.column,
-        });
-        const context = resolveCompletionContext(sqlBeforeCursor);
-        const aliasMap = getAliasToTableMap(sqlBeforeCursor);
-        const word = model.getWordUntilPosition(position);
-        const range = {
-          startLineNumber: position.lineNumber,
-          endLineNumber: position.lineNumber,
-          startColumn: word.startColumn,
-          endColumn: word.endColumn,
-        };
+  // Register the shared custom completion / diagnostics config for the
+  // supported dialect exactly once. The completion service reads the latest
+  // schema from the ref.
+  useEffect(() => {
+    const completionService = buildCompletionService(() => schemaRef.current);
 
-        const keywordSuggestions = activeKeywords.map((keyword) => ({
-          label: keyword,
-          kind: monaco.languages.CompletionItemKind.Keyword,
-          insertText: keyword,
-          detail: dialect,
-          range,
-        }));
-
-        const tableSuggestions = tableNames.map((table) => ({
-          label: table,
-          kind: monaco.languages.CompletionItemKind.Class,
-          insertText: table,
-          detail: 'table',
-          range,
-        }));
-
-        const aliasTable = aliasMap.get(context.kind === 'alias-column' ? context.alias : '');
-        const normalizedAliasTable =
-          dialect === 'oracle' ? aliasTable?.toUpperCase() : aliasTable?.toLowerCase();
-        const targetColumns =
-          context.kind === 'alias-column'
-            ? activeSchema[normalizedAliasTable ?? ''] ?? []
-            : columnNames;
-
-        const columnSuggestions = targetColumns.map((column) => ({
-          label: column,
-          kind: monaco.languages.CompletionItemKind.Field,
-          insertText: column,
-          detail: 'column',
-          range,
-        }));
-
-        if (context.kind === 'table') {
-          return { suggestions: tableSuggestions };
-        }
-        if (context.kind === 'column' || context.kind === 'alias-column') {
-          return { suggestions: columnSuggestions };
-        }
-
-        return { suggestions: [...keywordSuggestions, ...tableSuggestions, ...columnSuggestions] };
-      },
+    (Object.values(DIALECT_LANGUAGE_ID) as LanguageIdEnum[]).forEach((languageId) => {
+      setupLanguageFeatures(languageId, {
+        completionItems: {
+          enable: true,
+          // `:` triggers the popup for `value::type` (PostgreSQL type cast).
+          triggerCharacters: [' ', '.', ':'],
+          completionService,
+        },
+        diagnostics: true,
+      });
     });
-  };
+  }, []);
 
   const handleEditorMount = (_editor: unknown, monaco: Monaco) => {
     monacoRef.current = monaco;
-    registerCompletionProvider(monaco);
   };
-
-  useEffect(() => {
-    if (monacoRef.current) {
-      registerCompletionProvider(monacoRef.current);
-    }
-  }, [dialect, activeKeywords, activeSchema, tableNames, columnNames]);
 
   return (
     <div
@@ -253,18 +246,23 @@ function App() {
             <select
               id="sql-dialect-select"
               value={dialect}
-              onChange={(event) => setDialect(event.target.value as SqlDialect)}
+              onChange={() => {
+                // No-op: only PostgreSQL is selectable. Oracle is shown but disabled.
+              }}
               style={{ fontSize: 13, padding: '4px 8px', borderRadius: 6, border: '1px solid #cfd4dc' }}
             >
-              <option value="postgresql">PostgreSQL</option>
-              <option value="oracle">Oracle</option>
+              <option value="pgsql">PostgreSQL</option>
+              <option value="oracle" disabled title="Oracle is not supported by monaco-sql-languages">
+                Oracle (not supported)
+              </option>
             </select>
           </div>
 
           <div style={{ flex: 1 }}>
             <Editor
               height="100%"
-              language="sql"
+              language={DIALECT_LANGUAGE_ID[dialect]}
+              theme="sql-light"
               value={query}
               onChange={(value) => setQuery(value ?? '')}
               onMount={handleEditorMount}
@@ -281,6 +279,9 @@ function App() {
                 overviewRulerLanes: 0,
                 scrollbar: { vertical: 'auto', horizontal: 'auto' },
                 padding: { top: 14, bottom: 14 },
+                suggest: {
+                  snippetsPreventQuickSuggestions: false,
+                },
               }}
             />
           </div>
@@ -296,7 +297,7 @@ function App() {
           }}
         >
           <div style={{ fontSize: 13, fontWeight: 600, color: '#344054', marginBottom: 10 }}>
-            Mock schema ({dialect})
+            Mock schema ({DIALECT_LABEL[dialect]})
           </div>
           <div style={{ display: 'grid', gap: 10 }}>
             {Object.entries(activeSchema).map(([table, columns]) => (

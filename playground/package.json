@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "monaco-editor": "^0.54.0",
+    "monaco-sql-languages": "^1.0.0",
     "react": "^19.2.0-canary-5e0c951b-20250916",
     "react-dom": "^19.2.0-canary-5e0c951b-20250916",
     "state-local": "^1.0.7"
