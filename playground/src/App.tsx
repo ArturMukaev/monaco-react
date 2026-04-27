@@ -299,7 +299,7 @@ function App() {
                 suggestOnTriggerCharacters: true,
                 formatOnType: true,
                 formatOnPaste: true,
-                lineNumbers: 'off',
+                lineNumbers: 'on',
                 glyphMargin: false,
                 folding: false,
                 overviewRulerLanes: 0,
